@@ -23,6 +23,8 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 
 #[cfg(feature = "sqlite")]
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+#[cfg(feature = "sqlite")]
 use std::{fs::create_dir_all, path::PathBuf};
 
 #[cfg(feature = "sqlite")]
@@ -166,6 +168,14 @@ async fn load<R: Runtime>(
     if !Db::database_exists(&fqdb).await.unwrap_or(false) {
         Db::create_database(&fqdb).await?;
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let conn_opts =
+            SqliteConnectOptions::from_str(&fqdb)?.journal_mode(SqliteJournalMode::Delete);
+        let pool = Pool::connect_with(conn_opts).await?;
+    }
+    #[cfg(not(feature = "sqlite"))]
     let pool = Pool::connect(&fqdb).await?;
 
     if let Some(migrations) = migrations.0.lock().await.remove(&db) {
@@ -313,6 +323,14 @@ impl Builder {
                         if !Db::database_exists(&fqdb).await.unwrap_or(false) {
                             Db::create_database(&fqdb).await?;
                         }
+
+                        #[cfg(feature = "sqlite")]
+                        {
+                            let conn_opts = SqliteConnectOptions::from_str(&fqdb)?
+                                .journal_mode(SqliteJournalMode::Delete);
+                            let pool = Pool::connect_with(conn_opts).await?;
+                        }
+                        #[cfg(not(feature = "sqlite"))]
                         let pool = Pool::connect(&fqdb).await?;
 
                         if let Some(migrations) = self.migrations.as_mut().unwrap().remove(&db) {
