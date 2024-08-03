@@ -171,11 +171,9 @@ async fn load<R: Runtime>(
     }
 
     #[cfg(feature = "sqlite")]
-    {
-        let conn_opts =
-            SqliteConnectOptions::from_str(&fqdb)?.journal_mode(SqliteJournalMode::Delete);
-        let pool = Pool::connect_with(conn_opts).await?;
-    }
+    let conn_opts = SqliteConnectOptions::from_str(&fqdb)?.journal_mode(SqliteJournalMode::Delete);
+    #[cfg(feature = "sqlite")]
+    let pool = Pool::connect_with(conn_opts).await?;
     #[cfg(not(feature = "sqlite"))]
     let pool = Pool::connect(&fqdb).await?;
 
@@ -326,11 +324,10 @@ impl Builder {
                         }
 
                         #[cfg(feature = "sqlite")]
-                        {
-                            let conn_opts = SqliteConnectOptions::from_str(&fqdb)?
-                                .journal_mode(SqliteJournalMode::Delete);
-                            let pool = Pool::connect_with(conn_opts).await?;
-                        }
+                        let conn_opts = SqliteConnectOptions::from_str(&fqdb)?
+                            .journal_mode(SqliteJournalMode::Delete);
+                        #[cfg(feature = "sqlite")]
+                        let pool = Pool::connect_with(conn_opts).await?;
                         #[cfg(not(feature = "sqlite"))]
                         let pool = Pool::connect(&fqdb).await?;
 
