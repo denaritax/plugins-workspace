@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 
 use indexmap::IndexMap;
 use std::collections::HashMap;
+use std::str::FromStr;
 
 #[cfg(feature = "sqlite")]
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
