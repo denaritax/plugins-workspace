@@ -1,3 +1,7 @@
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
+
 use serde_json::Value as JsonValue;
 use sqlx::{postgres::PgValueRef, TypeInfo, Value, ValueRef};
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
@@ -10,7 +14,7 @@ pub(crate) fn to_json(v: PgValueRef) -> Result<JsonValue, Error> {
     }
 
     let res = match v.type_info().name() {
-        "CHAR" | "VARCHAR" | "TEXT" | "NAME" => {
+        "CHAR" | "VARCHAR" | "TEXT" | "NAME" | "UUID" => {
             if let Ok(v) = ValueRef::to_owned(&v).try_decode() {
                 JsonValue::String(v)
             } else {

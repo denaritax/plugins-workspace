@@ -1,8 +1,15 @@
-// Copyright 2021 Tauri Programme within The Commons Conservancy
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
-use fern::FormatCallback;
+//! Logging for Tauri applications.
+
+#![doc(
+    html_logo_url = "https://github.com/tauri-apps/tauri/raw/dev/app-icon.png",
+    html_favicon_url = "https://github.com/tauri-apps/tauri/raw/dev/app-icon.png"
+)]
+
+use fern::{Filter, FormatCallback};
 use log::{logger, RecordBuilder};
 use log::{LevelFilter, Record};
 use serde::Serialize;
@@ -19,14 +26,64 @@ use tauri::{
     plugin::{self, TauriPlugin},
     Manager, Runtime,
 };
+use tauri::{AppHandle, Emitter};
 
 pub use fern;
 use time::OffsetDateTime;
 
+pub const WEBVIEW_TARGET: &str = "webview";
+
+#[cfg(target_os = "ios")]
+mod ios {
+    use cocoa::base::id;
+    use objc::*;
+
+    const UTF8_ENCODING: usize = 4;
+    pub struct NSString(pub id);
+
+    impl NSString {
+        pub fn new(s: &str) -> Self {
+            // Safety: objc runtime calls are unsafe
+            NSString(unsafe {
+                let ns_string: id = msg_send![class!(NSString), alloc];
+                let ns_string: id = msg_send![ns_string,
+                                            initWithBytes:s.as_ptr()
+                                            length:s.len()
+                                            encoding:UTF8_ENCODING];
+
+                // The thing is allocated in rust, the thing must be set to autorelease in rust to relinquish control
+                // or it can not be released correctly in OC runtime
+                let _: () = msg_send![ns_string, autorelease];
+
+                ns_string
+            })
+        }
+    }
+
+    swift_rs::swift!(pub fn tauri_log(
+      level: u8, message: *const std::ffi::c_void
+    ));
+}
+
 const DEFAULT_MAX_FILE_SIZE: u128 = 40000;
 const DEFAULT_ROTATION_STRATEGY: RotationStrategy = RotationStrategy::KeepOne;
 const DEFAULT_TIMEZONE_STRATEGY: TimezoneStrategy = TimezoneStrategy::UseUtc;
-const DEFAULT_LOG_TARGETS: [LogTarget; 2] = [LogTarget::Stdout, LogTarget::LogDir];
+const DEFAULT_LOG_TARGETS: [Target; 2] = [
+    Target::new(TargetKind::Stdout),
+    Target::new(TargetKind::LogDir { file_name: None }),
+];
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error(transparent)]
+    Tauri(#[from] tauri::Error),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    TimeFormat(#[from] time::error::Format),
+    #[error(transparent)]
+    InvalidFormatDescription(#[from] time::error::InvalidFormatDescription),
+}
 
 /// An enum representing the available verbosity levels of the logger.
 ///
@@ -109,7 +166,7 @@ struct RecordPayload {
 }
 
 /// An enum representing the available targets of the logger.
-pub enum LogTarget {
+pub enum TargetKind {
     /// Print logs to stdout.
     Stdout,
     /// Print logs to stderr.
@@ -117,21 +174,49 @@ pub enum LogTarget {
     /// Write logs to the given directory.
     ///
     /// The plugin will ensure the directory exists before writing logs.
-    Folder(PathBuf),
+    Folder {
+        path: PathBuf,
+        file_name: Option<String>,
+    },
     /// Write logs to the OS specific logs directory.
     ///
     /// ### Platform-specific
     ///
-    /// |Platform | Value                                         | Example                                        |
-    /// | ------- | --------------------------------------------- | ---------------------------------------------- |
-    /// | Linux   | `{configDir}/{bundleIdentifier}`              | `/home/alice/.config/com.tauri.dev`            |
-    /// | macOS   | `{homeDir}/Library/Logs/{bundleIdentifier}`   | `/Users/Alice/Library/Logs/com.tauri.dev`      |
-    /// | Windows | `{configDir}/{bundleIdentifier}`              | `C:\Users\Alice\AppData\Roaming\com.tauri.dev` |
-    LogDir,
+    /// |Platform | Value                                                                                     | Example                                                     |
+    /// | ------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+    /// | Linux   | `$XDG_DATA_HOME/{bundleIdentifier}/logs` or `$HOME/.local/share/{bundleIdentifier}/logs`  | `/home/alice/.local/share/com.tauri.dev/logs`               |
+    /// | macOS   | `{homeDir}/Library/Logs/{bundleIdentifier}`                                               | `/Users/Alice/Library/Logs/com.tauri.dev`                   |
+    /// | Windows | `{FOLDERID_LocalAppData}/{bundleIdentifier}/logs`                                         | `C:\Users\Alice\AppData\Local\com.tauri.dev\logs`           |
+    LogDir { file_name: Option<String> },
     /// Forward logs to the webview (via the `log://log` event).
     ///
     /// This requires the webview to subscribe to log events, via this plugins `attachConsole` function.
     Webview,
+}
+
+/// A log target.
+pub struct Target {
+    kind: TargetKind,
+    filters: Vec<Box<Filter>>,
+}
+
+impl Target {
+    #[inline]
+    pub const fn new(kind: TargetKind) -> Self {
+        Self {
+            kind,
+            filters: Vec::new(),
+        }
+    }
+
+    #[inline]
+    pub fn filter<F>(mut self, filter: F) -> Self
+    where
+        F: Fn(&log::Metadata) -> bool + Send + Sync + 'static,
+    {
+        self.filters.push(Box::new(filter));
+        self
+    }
 }
 
 #[tauri::command]
@@ -143,13 +228,16 @@ fn log(
     line: Option<u32>,
     key_values: Option<HashMap<String, String>>,
 ) {
-    let location = location.unwrap_or("webview");
+    let level = log::Level::from(level);
+
+    let target = if let Some(location) = location {
+        format!("{WEBVIEW_TARGET}:{location}")
+    } else {
+        WEBVIEW_TARGET.to_string()
+    };
+
     let mut builder = RecordBuilder::new();
-    builder
-        .level(level.into())
-        .target(location)
-        .file(file)
-        .line(line);
+    builder.level(level).target(&target).file(file).line(line);
 
     let key_values = key_values.unwrap_or_default();
     let mut kv = HashMap::new();
@@ -166,23 +254,28 @@ pub struct Builder {
     rotation_strategy: RotationStrategy,
     timezone_strategy: TimezoneStrategy,
     max_file_size: u128,
-    targets: Vec<LogTarget>,
-    log_name: Option<String>,
+    targets: Vec<Target>,
 }
 
 impl Default for Builder {
     fn default() -> Self {
+        #[cfg(desktop)]
         let format =
             time::format_description::parse("[[[year]-[month]-[day]][[[hour]:[minute]:[second]]")
                 .unwrap();
         let dispatch = fern::Dispatch::new().format(move |out, message, record| {
-            out.finish(format_args!(
-                "{}[{}][{}] {}",
-                DEFAULT_TIMEZONE_STRATEGY.get_now().format(&format).unwrap(),
-                record.level(),
-                record.target(),
-                message
-            ))
+            out.finish(
+                #[cfg(mobile)]
+                format_args!("[{}] {}", record.target(), message),
+                #[cfg(desktop)]
+                format_args!(
+                    "{}[{}][{}] {}",
+                    DEFAULT_TIMEZONE_STRATEGY.get_now().format(&format).unwrap(),
+                    record.target(),
+                    record.level(),
+                    message
+                ),
+            )
         });
         Self {
             dispatch,
@@ -190,7 +283,6 @@ impl Default for Builder {
             timezone_strategy: DEFAULT_TIMEZONE_STRATEGY,
             max_file_size: DEFAULT_MAX_FILE_SIZE,
             targets: DEFAULT_LOG_TARGETS.into(),
-            log_name: None,
         }
     }
 }
@@ -254,36 +346,38 @@ impl Builder {
         self
     }
 
-    pub fn target(mut self, target: LogTarget) -> Self {
+    /// Removes all targets. Useful to ignore the default targets and reconfigure them.
+    pub fn clear_targets(mut self) -> Self {
+        self.targets.clear();
+        self
+    }
+
+    /// Adds a log target to the logger.
+    ///
+    /// ```rust
+    /// use tauri_plugin_log::{Target, TargetKind};
+    /// tauri_plugin_log::Builder::new()
+    ///     .target(Target::new(TargetKind::Webview));
+    /// ```
+    pub fn target(mut self, target: Target) -> Self {
         self.targets.push(target);
         self
     }
 
-    pub fn targets(mut self, targets: impl IntoIterator<Item = LogTarget>) -> Self {
-        self.targets = Vec::from_iter(targets);
-        self
-    }
-
-    /// Writes logs to the given file. Default: <app_name>.log)
+    /// Adds a collection of targets to the logger.
     ///
-    /// Note: This does not modify the directory logs go into. For that refer to `LogTarget::Folder`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use tauri_plugin_log::Builder;
-    /// let name = "custom-name";
-    /// let builder = Builder::default()
+    /// ```rust
+    /// use tauri_plugin_log::{Target, TargetKind, WEBVIEW_TARGET};
+    /// tauri_plugin_log::Builder::new()
+    ///     .clear_targets()
     ///     .targets([
-    ///         LogTarget::LogDir
-    ///     ])
-    ///     .log_name(name)
-    ///     .build()
-    /// ); // Outputs content to custom-name.log
-    ///
+    ///         Target::new(TargetKind::Webview),
+    ///         Target::new(TargetKind::LogDir { file_name: Some("webview".into()) }).filter(|metadata| metadata.target().starts_with(WEBVIEW_TARGET)),
+    ///         Target::new(TargetKind::LogDir { file_name: Some("rust".into()) }).filter(|metadata| !metadata.target().starts_with(WEBVIEW_TARGET)),
+    ///     ]);
     /// ```
-    pub fn log_name<S: Into<String>>(mut self, log_name: S) -> Self {
-        self.log_name = Some(log_name.into());
+    pub fn targets(mut self, targets: impl IntoIterator<Item = Target>) -> Self {
+        self.targets = Vec::from_iter(targets);
         self
     }
 
@@ -305,67 +399,134 @@ impl Builder {
         })
     }
 
-    pub fn build<R: Runtime>(mut self) -> TauriPlugin<R> {
-        plugin::Builder::new("log")
-            .invoke_handler(tauri::generate_handler![log])
-            .setup(move |app_handle| {
-                let log_name = self
-                    .log_name
-                    .as_deref()
-                    .unwrap_or_else(|| &app_handle.package_info().name);
+    fn acquire_logger<R: Runtime>(
+        app_handle: &AppHandle<R>,
+        mut dispatch: fern::Dispatch,
+        rotation_strategy: RotationStrategy,
+        timezone_strategy: TimezoneStrategy,
+        max_file_size: u128,
+        targets: Vec<Target>,
+    ) -> Result<(log::LevelFilter, Box<dyn log::Log>), Error> {
+        let app_name = &app_handle.package_info().name;
 
-                // setup targets
-                for target in &self.targets {
-                    self.dispatch = self.dispatch.chain(match target {
-                        LogTarget::Stdout => fern::Output::from(std::io::stdout()),
-                        LogTarget::Stderr => fern::Output::from(std::io::stderr()),
-                        LogTarget::Folder(path) => {
-                            if !path.exists() {
-                                fs::create_dir_all(path).unwrap();
-                            }
+        // setup targets
+        for target in targets {
+            let mut target_dispatch = fern::Dispatch::new();
+            for filter in target.filters {
+                target_dispatch = target_dispatch.filter(filter);
+            }
 
-                            fern::log_file(get_log_file_path(
-                                &path,
-                                log_name,
-                                &self.rotation_strategy,
-                                &self.timezone_strategy,
-                                self.max_file_size,
-                            )?)?
-                            .into()
-                        }
-                        LogTarget::LogDir => {
-                            let path = app_handle.path_resolver().app_log_dir().unwrap();
-                            if !path.exists() {
-                                fs::create_dir_all(&path).unwrap();
-                            }
+            let logger = match target.kind {
+                #[cfg(target_os = "android")]
+                TargetKind::Stdout | TargetKind::Stderr => fern::Output::call(android_logger::log),
+                #[cfg(target_os = "ios")]
+                TargetKind::Stdout | TargetKind::Stderr => fern::Output::call(move |record| {
+                    let message = format!("{}", record.args());
+                    unsafe {
+                        ios::tauri_log(
+                            match record.level() {
+                                log::Level::Trace | log::Level::Debug => 1,
+                                log::Level::Info => 2,
+                                log::Level::Warn | log::Level::Error => 3,
+                            },
+                            ios::NSString::new(message.as_str()).0 as _,
+                        );
+                    }
+                }),
+                #[cfg(desktop)]
+                TargetKind::Stdout => std::io::stdout().into(),
+                #[cfg(desktop)]
+                TargetKind::Stderr => std::io::stderr().into(),
+                TargetKind::Folder { path, file_name } => {
+                    if !path.exists() {
+                        fs::create_dir_all(&path)?;
+                    }
 
-                            fern::log_file(get_log_file_path(
-                                &path,
-                                log_name,
-                                &self.rotation_strategy,
-                                &self.timezone_strategy,
-                                self.max_file_size,
-                            )?)?
-                            .into()
-                        }
-                        LogTarget::Webview => {
-                            let app_handle = app_handle.clone();
-
-                            fern::Output::call(move |record| {
-                                let payload = RecordPayload {
-                                    message: record.args().to_string(),
-                                    level: record.level().into(),
-                                };
-                                let app_handle = app_handle.clone();
-                                tauri::async_runtime::spawn(async move {
-                                    app_handle.emit_all("log://log", payload).unwrap();
-                                });
-                            })
-                        }
-                    });
+                    fern::log_file(get_log_file_path(
+                        &path,
+                        file_name.as_deref().unwrap_or(app_name),
+                        &rotation_strategy,
+                        &timezone_strategy,
+                        max_file_size,
+                    )?)?
+                    .into()
                 }
+                #[cfg(mobile)]
+                TargetKind::LogDir { .. } => continue,
+                #[cfg(desktop)]
+                TargetKind::LogDir { file_name } => {
+                    let path = app_handle.path().app_log_dir()?;
+                    if !path.exists() {
+                        fs::create_dir_all(&path)?;
+                    }
 
-                self.dispatch.apply()?;
+                    fern::log_file(get_log_file_path(
+                        &path,
+                        file_name.as_deref().unwrap_or(app_name),
+                        &rotation_strategy,
+                        &timezone_strategy,
+                        max_file_size,
+                    )?)?
+                    .into()
+                }
+                TargetKind::Webview => {
+                    let app_handle = app_handle.clone();
+
+                    fern::Output::call(move |record| {
+                        let payload = RecordPayload {
+                            message: record.args().to_string(),
+                            level: record.level().into(),
+                        };
+                        let app_handle = app_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = app_handle.emit("log://log", payload);
+                        });
+                    })
+                }
+            };
+            target_dispatch = target_dispatch.chain(logger);
+
+            dispatch = dispatch.chain(target_dispatch);
+        }
+
+        Ok(dispatch.into_log())
+    }
+
+    fn plugin_builder<R: Runtime>() -> plugin::Builder<R> {
+        plugin::Builder::new("log").invoke_handler(tauri::generate_handler![log])
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn split<R: Runtime>(
+        self,
+        app_handle: &AppHandle<R>,
+    ) -> Result<(TauriPlugin<R>, log::LevelFilter, Box<dyn log::Log>), Error> {
+        let plugin = Self::plugin_builder();
+        let (max_level, log) = Self::acquire_logger(
+            app_handle,
+            self.dispatch,
+            self.rotation_strategy,
+            self.timezone_strategy,
+            self.max_file_size,
+            self.targets,
+        )?;
+
+        Ok((plugin.build(), max_level, log))
+    }
+
+    pub fn build<R: Runtime>(self) -> TauriPlugin<R> {
+        Self::plugin_builder()
+            .setup(move |app_handle, _api| {
+                let (max_level, log) = Self::acquire_logger(
+                    app_handle,
+                    self.dispatch,
+                    self.rotation_strategy,
+                    self.timezone_strategy,
+                    self.max_file_size,
+                    self.targets,
+                )?;
+
+                attach_logger(max_level, log)?;
 
                 Ok(())
             })
@@ -373,14 +534,24 @@ impl Builder {
     }
 }
 
+/// Attaches the given logger
+pub fn attach_logger(
+    max_level: log::LevelFilter,
+    log: Box<dyn log::Log>,
+) -> Result<(), log::SetLoggerError> {
+    log::set_boxed_logger(log)?;
+    log::set_max_level(max_level);
+    Ok(())
+}
+
 fn get_log_file_path(
     dir: &impl AsRef<Path>,
-    log_name: &str,
+    file_name: &str,
     rotation_strategy: &RotationStrategy,
     timezone_strategy: &TimezoneStrategy,
     max_file_size: u128,
-) -> plugin::Result<PathBuf> {
-    let path = dir.as_ref().join(format!("{log_name}.log"));
+) -> Result<PathBuf, Error> {
+    let path = dir.as_ref().join(format!("{file_name}.log"));
 
     if path.exists() {
         let log_size = File::open(&path)?.metadata()?.len() as u128;
@@ -389,16 +560,12 @@ fn get_log_file_path(
                 RotationStrategy::KeepAll => {
                     let to = dir.as_ref().join(format!(
                         "{}_{}.log",
-                        log_name,
+                        file_name,
                         timezone_strategy
                             .get_now()
-                            .format(
-                                &time::format_description::parse(
-                                    "[year]-[month]-[day]_[hour]-[minute]-[second]"
-                                )
-                                .unwrap()
-                            )
-                            .unwrap(),
+                            .format(&time::format_description::parse(
+                                "[year]-[month]-[day]_[hour]-[minute]-[second]"
+                            )?)?,
                     ));
                     if to.is_file() {
                         // designated rotated log file name already exists
@@ -406,7 +573,10 @@ fn get_log_file_path(
                         let mut to_bak = to.clone();
                         to_bak.set_file_name(format!(
                             "{}.bak",
-                            to_bak.file_name().unwrap().to_string_lossy()
+                            to_bak
+                                .file_name()
+                                .map(|f| f.to_string_lossy())
+                                .unwrap_or_default()
                         ));
                         fs::rename(&to, to_bak)?;
                     }

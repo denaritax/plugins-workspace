@@ -1,10 +1,16 @@
-// Copyright 2019-2021 Tauri Programme within The Commons Conservancy
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
+//! Automatically launch your application at startup. Supports Windows, Mac (via AppleScript or Launch Agent), and Linux.
+
+#![doc(
+    html_logo_url = "https://github.com/tauri-apps/tauri/raw/dev/app-icon.png",
+    html_favicon_url = "https://github.com/tauri-apps/tauri/raw/dev/app-icon.png"
+)]
+#![cfg(not(any(target_os = "android", target_os = "ios")))]
+
 use auto_launch::{AutoLaunch, AutoLaunchBuilder};
-#[cfg(target_os = "macos")]
-use log::info;
 use serde::{ser::Serializer, Serialize};
 use tauri::{
     command,
@@ -98,7 +104,7 @@ pub fn init<R: Runtime>(
 ) -> TauriPlugin<R> {
     Builder::new("autostart")
         .invoke_handler(tauri::generate_handler![enable, disable, is_enabled])
-        .setup(move |app| {
+        .setup(move |app, _api| {
             let mut builder = AutoLaunchBuilder::new();
             builder.set_app_name(&app.package_info().name);
             if let Some(args) = args {
@@ -119,12 +125,12 @@ pub fn init<R: Runtime>(
                 // exe path to not break it.
                 let exe_path = current_exe.canonicalize()?.display().to_string();
                 let parts: Vec<&str> = exe_path.split(".app/").collect();
-                let app_path = if parts.len() == 2 {
-                    format!("{}.app", parts.get(0).unwrap().to_string())
-                } else {
-                    exe_path
-                };
-                info!("auto_start path {}", &app_path);
+                let app_path =
+                    if parts.len() == 2 && matches!(macos_launcher, MacosLauncher::AppleScript) {
+                        format!("{}.app", parts.first().unwrap())
+                    } else {
+                        exe_path
+                    };
                 builder.set_app_path(&app_path);
             }
             #[cfg(target_os = "linux")]

@@ -1,27 +1,43 @@
 [package]
 name = "tauri-plugin-sql"
-version = "0.0.0"
+version = "2.2.0"
 description = "Interface with SQL databases."
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
-#rust-version.workspace = true
-rust-version = "1.65"
+authors = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+repository = { workspace = true }
+links = "tauri-plugin-sql"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[package.metadata.docs.rs]
+features = ["sqlite"]
+rustc-args = ["--cfg", "docsrs"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[package.metadata.platforms.support]
+windows = { level = "full", notes = "" }
+linux = { level = "full", notes = "" }
+macos = { level = "full", notes = "" }
+android = { level = "full", notes = "" }
+ios = { level = "none", notes = "" }
+
+[build-dependencies]
+tauri-plugin = { workspace = true, features = ["build"] }
 
 [dependencies]
-serde.workspace = true
-serde_json.workspace = true
-tauri.workspace = true
-log.workspace = true
-thiserror.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+tauri = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
 futures-core = "0.3"
-sqlx = { version = "0.7", features = ["json", "time"] }
+sqlx = { version = "0.8", features = ["json", "time"] }
 time = "0.3"
 tokio = { version = "1", features = ["sync"] }
+indexmap = { version = "2", features = ["serde"] }
 
 [features]
 sqlite = ["sqlx/sqlite", "sqlx/runtime-tokio"]
 mysql = ["sqlx/mysql", "sqlx/runtime-tokio-rustls"]
 postgres = ["sqlx/postgres", "sqlx/runtime-tokio-rustls"]
+# TODO: bundled-cipher etc

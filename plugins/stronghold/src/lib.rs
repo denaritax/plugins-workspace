@@ -1,3 +1,14 @@
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
+
+//! Store secrets and keys using the [IOTA Stronghold](https://github.com/iotaledger/stronghold.rs) encrypted database and secure runtime.
+
+#![doc(
+    html_logo_url = "https://github.com/tauri-apps/tauri/raw/dev/app-icon.png",
+    html_favicon_url = "https://github.com/tauri-apps/tauri/raw/dev/app-icon.png"
+)]
+
 use std::{
     collections::HashMap,
     fmt,
@@ -6,9 +17,10 @@ use std::{
     time::Duration,
 };
 
+use crypto::keys::bip39;
 use iota_stronghold::{
     procedures::{
-        BIP39Generate, BIP39Recover, Chain, Ed25519Sign, KeyType as StrongholdKeyType,
+        BIP39Generate, BIP39Recover, Curve, Ed25519Sign, KeyType as StrongholdKeyType,
         MnemonicLanguage, PublicKey, Slip10Derive, Slip10DeriveInput, Slip10Generate,
         StrongholdProcedure,
     },
@@ -20,7 +32,7 @@ use tauri::{
     plugin::{Builder as PluginBuilder, TauriPlugin},
     Manager, Runtime, State,
 };
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 #[cfg(feature = "kdf")]
 pub mod kdf;
@@ -113,7 +125,7 @@ impl<'de> Deserialize<'de> for KeyType {
     {
         struct KeyTypeVisitor;
 
-        impl<'de> Visitor<'de> for KeyTypeVisitor {
+        impl Visitor<'_> for KeyTypeVisitor {
             type Value = KeyType;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -186,7 +198,8 @@ impl From<ProcedureDto> for StrongholdProcedure {
                 input,
                 output,
             } => StrongholdProcedure::Slip10Derive(Slip10Derive {
-                chain: Chain::from_u32_hardened(chain),
+                curve: Curve::Ed25519,
+                chain,
                 input: input.into(),
                 output: output.into(),
             }),
@@ -195,13 +208,13 @@ impl From<ProcedureDto> for StrongholdProcedure {
                 passphrase,
                 output,
             } => StrongholdProcedure::BIP39Recover(BIP39Recover {
-                mnemonic,
-                passphrase,
+                mnemonic: bip39::Mnemonic::from(mnemonic),
+                passphrase: bip39::Passphrase::from(passphrase.unwrap_or_default()),
                 output: output.into(),
             }),
             ProcedureDto::BIP39Generate { passphrase, output } => {
                 StrongholdProcedure::BIP39Generate(BIP39Generate {
-                    passphrase,
+                    passphrase: bip39::Passphrase::from(passphrase.unwrap_or_default()),
                     output: output.into(),
                     language: MnemonicLanguage::English,
                 })
@@ -338,7 +351,10 @@ async fn save_secret(
     let client = get_client(collection, snapshot_path, client)?;
     client
         .vault(&vault)
-        .write_secret(Location::generic(vault, record_path), secret)
+        .write_secret(
+            Location::generic(vault, record_path),
+            Zeroizing::new(secret),
+        )
         .map_err(Into::into)
 }
 
@@ -421,10 +437,11 @@ impl Builder {
     /// # Examples
     ///
     /// ```rust
+    /// use tauri::Manager;
     /// tauri::Builder::default()
     ///     .setup(|app| {
     ///         let salt_path = app
-    ///             .path_resolver()
+    ///             .path()
     ///             .app_local_data_dir()
     ///             .expect("could not resolve app local data path")
     ///             .join("salt.txt");
@@ -442,7 +459,7 @@ impl Builder {
     pub fn build<R: Runtime>(self) -> TauriPlugin<R> {
         let password_hash_function = self.password_hash_function;
 
-        let plugin_builder = PluginBuilder::new("stronghold").setup(move |app| {
+        let plugin_builder = PluginBuilder::new("stronghold").setup(move |app, _api| {
             app.manage(StrongholdCollection::default());
             app.manage(PasswordHashFunction(match password_hash_function {
                 #[cfg(feature = "kdf")]

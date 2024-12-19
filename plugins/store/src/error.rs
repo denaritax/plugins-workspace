@@ -1,9 +1,10 @@
-// Copyright 2021 Tauri Programme within The Commons Conservancy
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
 use serde::{Serialize, Serializer};
-use std::path::PathBuf;
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// The error types.
 #[derive(thiserror::Error, Debug)]
@@ -19,9 +20,15 @@ pub enum Error {
     /// IO error.
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    /// Store not found
-    #[error("Store \"{0}\" not found")]
-    NotFound(PathBuf),
+    // /// Store already exists
+    // #[error("Store at \"{0}\" already exists")]
+    // AlreadyExists(PathBuf),
+    /// Serialize function not found
+    #[error("Serialize Function \"{0}\" not found")]
+    SerializeFunctionNotFound(String),
+    /// Deserialize function not found
+    #[error("Deserialize Function \"{0}\" not found")]
+    DeserializeFunctionNotFound(String),
     /// Some Tauri API failed
     #[error(transparent)]
     Tauri(#[from] tauri::Error),

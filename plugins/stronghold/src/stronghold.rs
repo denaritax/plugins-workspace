@@ -1,7 +1,12 @@
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
+
 use std::{convert::TryFrom, ops::Deref, path::Path};
 
 use iota_stronghold::{KeyProvider, SnapshotPath};
 use serde::{Serialize, Serializer};
+use zeroize::Zeroizing;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -36,7 +41,7 @@ impl Stronghold {
     pub fn new<P: AsRef<Path>>(path: P, password: Vec<u8>) -> Result<Self> {
         let path = SnapshotPath::from_path(path);
         let stronghold = iota_stronghold::Stronghold::default();
-        let keyprovider = KeyProvider::try_from(password)?;
+        let keyprovider = KeyProvider::try_from(Zeroizing::new(password))?;
         if path.exists() {
             stronghold.load_snapshot(&keyprovider, &path)?;
         }

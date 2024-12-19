@@ -1,10 +1,18 @@
-![plugin-sql](https://github.com/tauri-apps/plugins-workspace/raw/v1/plugins/sql/banner.png)
+![plugin-sql](https://github.com/tauri-apps/plugins-workspace/raw/v2/plugins/sql/banner.png)
 
 Interface with SQL databases through [sqlx](https://github.com/launchbadge/sqlx). It supports the `sqlite`, `mysql` and `postgres` drivers, enabled by a Cargo feature.
 
+| Platform | Supported |
+| -------- | --------- |
+| Linux    | ✓         |
+| Windows  | ✓         |
+| macOS    | ✓         |
+| Android  | ✓         |
+| iOS      | x         |
+
 ## Install
 
-_This plugin requires a Rust version of at least **1.65**_
+_This plugin requires a Rust version of at least **1.77.2**_
 
 There are three general methods of installation that we can recommend.
 
@@ -18,9 +26,11 @@ Install the Core plugin by adding the following to your `Cargo.toml` file:
 
 ```toml
 [dependencies.tauri-plugin-sql]
-git = "https://github.com/tauri-apps/plugins-workspace"
-branch = "v1"
 features = ["sqlite"] # or "postgres", or "mysql"
+version = "2.0.0"
+# alternatively with Git
+git = "https://github.com/tauri-apps/plugins-workspace"
+branch = "v2"
 ```
 
 You can install the JavaScript Guest bindings using your preferred JavaScript package manager:
@@ -28,18 +38,25 @@ You can install the JavaScript Guest bindings using your preferred JavaScript pa
 > Note: Since most JavaScript package managers are unable to install packages from git monorepos we provide read-only mirrors of each plugin. This makes installation option 2 more ergonomic to use.
 
 ```sh
-pnpm add https://github.com/tauri-apps/tauri-plugin-sql#v1
+pnpm add @tauri-apps/plugin-sql
 # or
-npm add https://github.com/tauri-apps/tauri-plugin-sql#v1
+npm add @tauri-apps/plugin-sql
 # or
-yarn add https://github.com/tauri-apps/tauri-plugin-sql#v1
+yarn add @tauri-apps/plugin-sql
+
+# alternatively with Git:
+pnpm add https://github.com/tauri-apps/tauri-plugin-sql#v2
+# or
+npm add https://github.com/tauri-apps/tauri-plugin-sql#v2
+# or
+yarn add https://github.com/tauri-apps/tauri-plugin-sql#v2
 ```
 
 ## Usage
 
 First you need to register the core plugin with Tauri:
 
-`src-tauri/src/main.rs`
+`src-tauri/src/lib.rs`
 
 ```rust
 fn main() {
@@ -53,16 +70,16 @@ fn main() {
 Afterwards all the plugin's APIs are available through the JavaScript guest bindings:
 
 ```javascript
-import Database from "tauri-plugin-sql-api";
+import Database from '@tauri-apps/plugin-sql'
 
-// sqlite. The path is relative to `tauri::api::path::BaseDirectory::App`.
-const db = await Database.load("sqlite:test.db");
+// sqlite. The path is relative to `tauri::api::path::BaseDirectory::AppConfig`.
+const db = await Database.load('sqlite:test.db')
 // mysql
-const db = await Database.load("mysql://user:pass@host/database");
+const db = await Database.load('mysql://user:pass@host/database')
 // postgres
-const db = await Database.load("postgres://postgres:password@localhost/test");
+const db = await Database.load('postgres://postgres:password@localhost/test')
 
-await db.execute("INSERT INTO ...");
+await db.execute('INSERT INTO ...')
 ```
 
 ## Syntax
@@ -75,25 +92,25 @@ We use sqlx as our underlying library, adopting their query syntax:
 ```javascript
 // INSERT and UPDATE examples for sqlite and postgres
 const result = await db.execute(
-  "INSERT into todos (id, title, status) VALUES ($1, $2, $3)",
-  [todos.id, todos.title, todos.status],
-);
+  'INSERT into todos (id, title, status) VALUES ($1, $2, $3)',
+  [todos.id, todos.title, todos.status]
+)
 
 const result = await db.execute(
-  "UPDATE todos SET title = $1, completed = $2 WHERE id = $3",
-  [todos.title, todos.status, todos.id],
-);
+  'UPDATE todos SET title = $1, status = $2 WHERE id = $3',
+  [todos.title, todos.status, todos.id]
+)
 
 // INSERT and UPDATE examples for mysql
 const result = await db.execute(
-  "INSERT into todos (id, title, status) VALUES (?, ?, ?)",
-  [todos.id, todos.title, todos.status],
-);
+  'INSERT into todos (id, title, status) VALUES (?, ?, ?)',
+  [todos.id, todos.title, todos.status]
+)
 
 const result = await db.execute(
-  "UPDATE todos SET title = ?, completed = ? WHERE id = ?",
-  [todos.title, todos.status, todos.id],
-);
+  'UPDATE todos SET title = ?, status = ? WHERE id = ?',
+  [todos.title, todos.status, todos.id]
+)
 ```
 
 ## Migrations
@@ -149,7 +166,26 @@ fn main() {
 
 ### Applying Migrations
 
-Migrations are applied automatically when the plugin is initialized. The plugin runs these migrations against the database specified by the connection string. Ensure that the migrations are defined in the correct order and are idempotent (safe to run multiple times).
+To apply the migrations when the plugin is initialized, add the connection string to the `tauri.conf.json` file:
+
+```json
+{
+  "plugins": {
+    "sql": {
+      "preload": ["sqlite:mydatabase.db"]
+    }
+  }
+}
+```
+
+Alternatively, the client side `load()` also runs the migrations for a given connection string:
+
+```ts
+import Database from '@tauri-apps/plugin-sql'
+const db = await Database.load('sqlite:mydatabase.db')
+```
+
+Ensure that the migrations are defined in the correct order and are safe to run multiple times.
 
 ### Migration Management
 
@@ -168,7 +204,7 @@ PRs accepted. Please make sure to read the Contributing Guide before making a pu
     <tr>
       <td align="center" valign="middle">
         <a href="https://crabnebula.dev" target="_blank">
-          <img src="https://github.com/tauri-apps/plugins-workspace/raw/v1/.github/sponsors/crabnebula.svg" alt="CrabNebula" width="283">
+          <img src="https://github.com/tauri-apps/plugins-workspace/raw/v2/.github/sponsors/crabnebula.svg" alt="CrabNebula" width="283">
         </a>
       </td>
     </tr>

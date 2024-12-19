@@ -1,12 +1,20 @@
-![plugin-localhost](https://github.com/tauri-apps/plugins-workspace/raw/v1/plugins/localhost/banner.png)
+![plugin-localhost](https://github.com/tauri-apps/plugins-workspace/raw/v2/plugins/localhost/banner.png)
 
 Expose your apps assets through a localhost server instead of the default custom protocol.
+
+| Platform | Supported |
+| -------- | --------- |
+| Linux    | ✓         |
+| Windows  | ✓         |
+| macOS    | ✓         |
+| Android  | ✓         |
+| iOS      | ✓         |
 
 > Note: This plugins brings considerable security risks and you should only use it if you know what your are doing. If in doubt, use the default custom protocol implementation.
 
 ## Install
 
-_This plugin requires a Rust version of at least **1.64**_
+_This plugin requires a Rust version of at least **1.77.2**_
 
 There are three general methods of installation that we can recommend.
 
@@ -20,45 +28,39 @@ Install the Core plugin by adding the following to your `Cargo.toml` file:
 
 ```toml
 [dependencies]
-tauri-plugin-localhost = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v1" }
 portpicker = "0.1" # used in the example to pick a random free port
+tauri-plugin-localhost = "2.0.0"
+# alternatively with Git:
+tauri-plugin-localhost = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v2" }
 ```
 
 ## Usage
 
 First you need to register the core plugin with Tauri:
 
-`src-tauri/src/main.rs`
+`src-tauri/src/lib.rs`
 
 ```rust
-use tauri::{utils::config::AppUrl, window::WindowBuilder, WindowUrl};
+use tauri::{Manager, window::WindowBuilder, WindowUrl};
 
 fn main() {
   let port = portpicker::pick_unused_port().expect("failed to find unused port");
 
-  let mut context = tauri::generate_context!();
-  let url = format!("http://localhost:{}", port).parse().unwrap();
-  let window_url = WindowUrl::External(url);
-  // rewrite the config so the IPC is enabled on this URL
-  context.config_mut().build.dist_dir = AppUrl::Url(window_url.clone());
-
   tauri::Builder::default()
     .plugin(tauri_plugin_localhost::Builder::new(port).build())
     .setup(move |app| {
-      WindowBuilder::new(
-        app,
-        "main".to_string(),
-        if cfg!(dev) {
-          Default::default()
-        } else {
-          window_url
-        }
-      )
-      .title("Localhost Example")
-      .build()?;
+      app.ipc_scope().configure_remote_access(
+        RemoteDomainAccessScope::new("localhost")
+          .add_window("main")
+      );
+
+      let url = format!("http://localhost:{}", port).parse().unwrap();
+      WindowBuilder::new(app, "main".to_string(), WindowUrl::External(url))
+        .title("Localhost Example")
+        .build()?;
       Ok(())
     })
-    .run(context)
+    .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }
 ```
@@ -74,7 +76,7 @@ PRs accepted. Please make sure to read the Contributing Guide before making a pu
     <tr>
       <td align="center" valign="middle">
         <a href="https://crabnebula.dev" target="_blank">
-          <img src="https://github.com/tauri-apps/plugins-workspace/raw/v1/.github/sponsors/crabnebula.svg" alt="CrabNebula" width="283">
+          <img src="https://github.com/tauri-apps/plugins-workspace/raw/v2/.github/sponsors/crabnebula.svg" alt="CrabNebula" width="283">
         </a>
       </td>
     </tr>

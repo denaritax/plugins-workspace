@@ -1,13 +1,22 @@
-// Copyright 2021 Tauri Programme within The Commons Conservancy
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
+//! Save filesystem and asset scopes and restore them when the app is reopened.
+
+#![doc(
+    html_logo_url = "https://github.com/tauri-apps/tauri/raw/dev/app-icon.png",
+    html_favicon_url = "https://github.com/tauri-apps/tauri/raw/dev/app-icon.png"
+)]
+
 use aho_corasick::AhoCorasick;
 use serde::{Deserialize, Serialize};
+
 use tauri::{
     plugin::{Builder, TauriPlugin},
-    FsScope, FsScopeEvent, Manager, Runtime,
+    Manager, Runtime,
 };
+use tauri_plugin_fs::FsExt;
 
 use std::{
     fs::{create_dir_all, File},
@@ -39,8 +48,6 @@ enum Error {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Tauri(#[from] tauri::Error),
-    #[error(transparent)]
-    TauriApi(#[from] tauri::api::Error),
     #[error(transparent)]
     Bincode(#[from] Box<bincode::ErrorKind>),
 }
@@ -95,12 +102,12 @@ fn fix_directory(path_str: &str) -> &Path {
     path
 }
 
-fn allow_path(scope: &FsScope, path: &str) {
+fn allow_path(scope: &tauri::fs::Scope, path: &str) {
     let target_type = detect_scope_type(path);
 
     match target_type {
         TargetType::File => {
-            let _ = scope.allow_file(path);
+            let _ = scope.allow_file(Path::new(path));
         }
         TargetType::Directory => {
             // We remove the '*' at the end of it, else it will be escaped by the pattern.
@@ -113,12 +120,12 @@ fn allow_path(scope: &FsScope, path: &str) {
     }
 }
 
-fn forbid_path(scope: &FsScope, path: &str) {
+fn forbid_path(scope: &tauri::fs::Scope, path: &str) {
     let target_type = detect_scope_type(path);
 
     match target_type {
         TargetType::File => {
-            let _ = scope.forbid_file(path);
+            let _ = scope.forbid_file(Path::new(path));
         }
         TargetType::Directory => {
             let _ = scope.forbid_directory(fix_directory(path), false);
@@ -129,7 +136,7 @@ fn forbid_path(scope: &FsScope, path: &str) {
     }
 }
 
-fn save_scopes(scope: &FsScope, app_dir: &Path, scope_state_path: &Path) {
+fn save_scopes(scope: &tauri::fs::Scope, app_dir: &Path, scope_state_path: &Path) {
     let scope = Scope {
         allowed_paths: scope
             .allowed_patterns()
@@ -154,19 +161,24 @@ fn save_scopes(scope: &FsScope, app_dir: &Path, scope_state_path: &Path) {
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("persisted-scope")
-        .setup(|app| {
-            let fs_scope = app.fs_scope();
+        .setup(|app, _api| {
+            let fs_scope = app.try_fs_scope();
             #[cfg(feature = "protocol-asset")]
             let asset_protocol_scope = app.asset_protocol_scope();
             let app = app.clone();
-            let app_dir = app.path_resolver().app_data_dir();
+            let app_dir = app.path().app_data_dir();
 
-            if let Some(app_dir) = app_dir {
+            if let Ok(app_dir) = app_dir {
                 let fs_scope_state_path = app_dir.join(SCOPE_STATE_FILENAME);
                 #[cfg(feature = "protocol-asset")]
                 let asset_scope_state_path = app_dir.join(ASSET_SCOPE_STATE_FILENAME);
 
-                let _ = fs_scope.forbid_file(&fs_scope_state_path);
+                if let Some(fs_scope) = &fs_scope {
+                     let _ = fs_scope.forbid_file(&fs_scope_state_path);
+                } else {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Please make sure to register the `fs` plugin before the `persisted-scope` plugin!");
+                }
                 #[cfg(feature = "protocol-asset")]
                 let _ = asset_protocol_scope.forbid_file(&asset_scope_state_path);
 
@@ -174,29 +186,31 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
                 // We will still save some semi-broken values because the scope events are quite spammy and we don't want to reduce runtime performance any further.
                 let ac = AhoCorasick::new(PATTERNS).unwrap(/* This should be impossible to fail since we're using a small static input */);
 
-                if fs_scope_state_path.exists() {
-                    let scope: Scope = tauri::api::file::read_binary(&fs_scope_state_path)
+                if let Some(fs_scope) = &fs_scope {
+                    if fs_scope_state_path.exists() {
+                    let scope: Scope = std::fs::read(&fs_scope_state_path)
                         .map_err(Error::from)
                         .and_then(|scope| bincode::deserialize(&scope).map_err(Into::into))
                         .unwrap_or_default();
 
                     for allowed in &scope.allowed_paths {
                         let allowed = fix_pattern(&ac, allowed);
-                        allow_path(&fs_scope, &allowed);
+                        allow_path(fs_scope, &allowed);
                     }
                     for forbidden in &scope.forbidden_patterns {
                         let forbidden = fix_pattern(&ac, forbidden);
-                        forbid_path(&fs_scope, &forbidden);
+                        forbid_path(fs_scope, &forbidden);
                     }
 
                     // Manually save the fixed scopes to disk once.
                     // This is needed to fix broken .peristed-scope files in case the app doesn't update the scope itself.
-                    save_scopes(&fs_scope, &app_dir, &fs_scope_state_path);
+                    save_scopes(fs_scope, &app_dir, &fs_scope_state_path);
                 }
+            }
 
                 #[cfg(feature = "protocol-asset")]
                 if asset_scope_state_path.exists() {
-                    let scope: Scope = tauri::api::file::read_binary(&asset_scope_state_path)
+                    let scope: Scope = std::fs::read(&asset_scope_state_path)
                         .map_err(Error::from)
                         .and_then(|scope| bincode::deserialize(&scope).map_err(Into::into))
                         .unwrap_or_default();
@@ -216,20 +230,25 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 
                 #[cfg(feature = "protocol-asset")]
                 let app_dir_ = app_dir.clone();
-                let fs_scope_ = fs_scope.clone();
-                fs_scope.listen(move |event| {
-                    if let FsScopeEvent::PathAllowed(_) = event {
-                        save_scopes(&fs_scope_, &app_dir, &fs_scope_state_path);
-                    }
-                });
+
+                if let Some(fs_scope) = &fs_scope {
+                    let app_ = app.clone();
+                    fs_scope.listen(move |event| {
+                        if let tauri::fs::Event::PathAllowed(_) = event {
+                            save_scopes(&app_.fs_scope(), &app_dir, &fs_scope_state_path);
+                        }
+                    });
+                }
+
                 #[cfg(feature = "protocol-asset")]
                 {
                     let asset_protocol_scope_ = asset_protocol_scope.clone();
                     asset_protocol_scope.listen(move |event| {
-                    if let FsScopeEvent::PathAllowed(_) = event {
-                        save_scopes(&asset_protocol_scope_, &app_dir_, &asset_scope_state_path);
-                    }
-                });}
+                        if let tauri::scope::fs::Event::PathAllowed(_) = event {
+                            save_scopes(&asset_protocol_scope_, &app_dir_, &asset_scope_state_path);
+                        }
+                    });
+                }
             }
             Ok(())
         })
